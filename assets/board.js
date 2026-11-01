@@ -1,18 +1,19 @@
 // Board dashboard: one per property / team. Same file for every repo; the repo sets window.TREVON_BOARD.
-let D = null, PIDX = 0, TVIEW = "open", SRC = "", OPENH = new Set();
+let D = null, PIDX = 0, TVIEW = "open", SRC = "", OPENH = new Set(), PERSON = Q.get("p") || "";
 const SRCS = [["", "All"], ["Meeting", "From meetings"], ["Strategy", "Strategy & roles"], ["Added", "Added by us"]];
 
 function page() {
   document.body.innerHTML = `<div class="toast" id="toast"></div>
   <header class="top"><div class="in"><div><div class="eyebrow" id="eb">Trevon Hotels &amp; Resorts</div><h1 id="nm">Loading…</h1><div class="sub" id="sb"></div></div>
   <div class="right"><b id="wk"></b><span id="sy"></span><br><span class="chip" id="who" title="Change your name">👤 <span id="whon">set your name</span></span></div></div></header>
-  <main><div class="kpis" id="kpis"></div>
-    <section class="panel"><div class="ph"><h2>Weekly routines <span class="note">· ongoing duties: tick them every week</span></h2>
+  <main><div class="kpis" id="kpis"></div><div id="extra-top"></div>
+    <section class="panel" id="rtp"><div class="ph"><h2>Weekly routines <span class="note">· ongoing duties: tick them every week</span></h2>
       <div class="seg" id="pseg"><button data-i="0" class="on">This week</button><button data-i="1">Last week</button></div></div><div id="rts"></div></section>
     <div id="mon"></div>
     <section class="panel"><div class="ph"><h2>Action items <span class="note">· from meetings, strategy and roles</span></h2>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><div class="seg" id="tseg"><button data-v="open" class="on">Open</button><button data-v="done">Completed</button></div>
-      <div class="seg" id="sseg">${SRCS.map(([v, l]) => `<button data-v="${v}" class="${v === "" ? "on" : ""}">${l}</button>`).join("")}</div></div></div><div id="tasks"></div></section>
+      <div class="seg" id="sseg">${SRCS.map(([v, l]) => `<button data-v="${v}" class="${v === "" ? "on" : ""}">${l}</button>`).join("")}</div></div></div><div id="pfil"></div><div id="tasks"></div></section>
+    <div id="extra"></div>
     <section class="panel"><div class="ph"><h2>Activity</h2><span class="note">every update on this dashboard, newest first</span></div><div class="feed" id="feed"></div></section>
     <div id="err"></div></main>
   <button class="fab" id="fab">＋ Add task</button>
@@ -44,16 +45,37 @@ function render() {
   const carried = open.filter((t) => t.carry >= 3).length;
   $("#kpis").innerHTML = [
     score !== null ? `<div class="kpi ring">${ring(score)}<div><div class="l">This week</div><div class="h">routines done<br>last week ${last}%</div></div></div>` : "",
-    st ? `<div class="kpi"><div class="l">Streak</div><div class="v">🔥 ${st}</div><div class="h">weeks at 80%+</div></div>` : `<div class="kpi"><div class="l">Streak</div><div class="v">0</div><div class="h">weeks at 80%+</div></div>`,
+    score === null ? "" : st ? `<div class="kpi"><div class="l">Streak</div><div class="v">🔥 ${st}</div><div class="h">weeks at 80%+</div></div>` : `<div class="kpi"><div class="l">Streak</div><div class="v">0</div><div class="h">weeks at 80%+</div></div>`,
+    D.nextMeeting ? `<div class="kpi"><div class="l">Next meeting</div><div class="v" style="font-size:20px">${esc(fmtMeet(D.nextMeeting.start))}</div><div class="h">${esc(D.nextMeeting.title)}</div></div>` : "",
     `<div class="kpi"><div class="l">Open actions</div><div class="v">${open.length}</div><div class="h">${doneWk} completed this week</div></div>`,
     `<div class="kpi"><div class="l">Stuck</div><div class="v" style="color:${stuck ? "var(--stuck)" : "var(--done)"}">${stuck}</div><div class="h">need director help</div></div>`,
     `<div class="kpi"><div class="l">Carried 3×+</div><div class="v" style="color:${carried ? "var(--part)" : "var(--done)"}">${carried}</div><div class="h">raised in 3+ meetings</div></div>`,
   ].join("");
-  renderRoutines(); renderMonitor(); renderTasks(); renderFeed();
+  renderRoutines(); renderMonitor(); renderPeople(); renderTasks(); renderFeed();
+  if (typeof window.BOARD_EXTRA === "function") { try { window.BOARD_EXTRA(D); } catch (e) { console.error(e); } }
+}
+function fmtMeet(s) {
+  const d = parseD(s); if (!d) return s; const t = new Date(), tm = new Date(t); tm.setDate(t.getDate() + 1);
+  const day = d.toDateString() === t.toDateString() ? "Today" : d.toDateString() === tm.toDateString() ? "Tomorrow" : d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  return day + " " + d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+/** Team boards: one chip per person; shared ("Team") items show for everyone. */
+const firstName = (n) => String(n || "").trim().split(/\s+/)[0].toLowerCase();
+function ownsTask(t, person) {
+  if (!person) return true; const o = String(t.owner || "").toLowerCase();
+  return !o || /^(team|the group|everyone|all)$/.test(o.trim()) || o.split(/[,&/+]| and /).some((x) => firstName(x) === firstName(person));
+}
+function renderPeople() {
+  const P = D.me.people || [];
+  if (D.me.type === "property" || P.length < 2) { $("#pfil").innerHTML = ""; return; }
+  const open = (p) => D.tasks.filter((t) => t.status !== "Completed" && ownsTask(t, p)).length;
+  $("#pfil").innerHTML = `<div class="people">${["", ...P].map((p) => `<button data-p="${esc(p)}" class="${p === PERSON ? "on" : ""}">${p ? esc(p) : "Everyone"} <b>${open(p)}</b></button>`).join("")}</div>`;
+  $$("#pfil button").forEach((b) => (b.onclick = () => { PERSON = b.dataset.p; const u = new URL(location.href); PERSON ? u.searchParams.set("p", PERSON) : u.searchParams.delete("p"); history.replaceState(null, "", u); renderPeople(); renderTasks(); }));
 }
 
 function renderRoutines() {
   const R = myRoutines();
+  $("#rtp").style.display = R.length ? "" : "none";
   if (!R.length) { $("#rts").innerHTML = `<div class="empty">No routines on this dashboard.</div>`; return; }
   const groups = [["Weekly", R.filter((r) => r.frequency === "Weekly")], ["Monthly", R.filter((r) => r.frequency === "Monthly")]];
   $("#rts").innerHTML = groups.filter((g) => g[1].length).map(([f, list]) => {
@@ -107,7 +129,7 @@ function renderMonitor() {
 
 function srcOf(t) { return t.source === "Meeting" ? "Meeting" : t.source === "Strategy" ? "Strategy" : "Added"; }
 function renderTasks() {
-  const T = D.tasks.filter((t) => (TVIEW === "done" ? t.status === "Completed" : t.status !== "Completed") && (!SRC || srcOf(t) === SRC));
+  const T = D.tasks.filter((t) => (TVIEW === "done" ? t.status === "Completed" : t.status !== "Completed") && (!SRC || srcOf(t) === SRC) && ownsTask(t, PERSON));
   const ord = { Stuck: 0, Ongoing: 1, Pending: 2, Completed: 3 }, pr = { High: 0, Medium: 1, Low: 2 };
   T.sort((a, b) => TVIEW === "done" ? String(b.completedAt).localeCompare(a.completedAt) : ord[a.status] - ord[b.status] || (isRole(b) - isRole(a)) || pr[a.priority] - pr[b.priority] || b.carry - a.carry);
   $("#tasks").innerHTML = T.length ? `<div class="tasks">${T.map(card).join("")}</div>` : `<div class="empty">${TVIEW === "done" ? "Nothing completed yet." : "🎉 No open action items here."}</div>`;
@@ -145,7 +167,7 @@ function renderFeed() {
 }
 async function addTask() {
   const task = $("#nT").value.trim(); if (!task) return; if (!me()) askName(); $("#nS").disabled = true;
-  try { await post({ action: "add", task, priority: $("#nP").value, due: $("#nD").value }); $("#modal").classList.remove("on"); $("#nT").value = ""; toast("Added"); await refresh(); }
+  try { await post({ action: "add", task, priority: $("#nP").value, due: $("#nD").value, owner: PERSON || undefined }); $("#modal").classList.remove("on"); $("#nT").value = ""; toast("Added"); await refresh(); }
   catch (e) { toast("Not saved: " + e.message); } finally { $("#nS").disabled = false; }
 }
 async function refresh() {

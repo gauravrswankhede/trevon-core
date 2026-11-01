@@ -1,8 +1,11 @@
 /**
- * Trevon Hotels — Task & Routine Tracker (Google Apps Script backend, v2)
+ * Trevon Hotels — Task & Routine Tracker (Google Apps Script backend, v3)
  * Files in this project: Code.gs (this) + Seed.gs (people, routines, starting tasks).
  * Run once: setup() → installTriggers() → Deploy as Web app (Execute as: Me · Access: Anyone).
  * Optional script property GEMINI_API_KEY for AI reading of meeting notes.
+ * v3: several meetings (MEETING_FEEDS: the evening Digital/Web/GMB meeting feeds only the "seo" board),
+ *     GMB set-up checklist per property (tabs "GMB items" + "GMB"), next meeting from Calendar,
+ *     per-board page paths (BOARD_PAGES). After pasting: run upgradeToV3 once, then deploy a new version.
  */
 
 const STATUSES = ['Pending', 'Ongoing', 'Stuck', 'Completed'];
@@ -13,9 +16,12 @@ const HEAD = {
   Routines: ['Code', 'Applies to', 'Title', 'Detail', 'Frequency', 'Number to record', 'Overseen by', 'Active'],
   Checkins: ['Period', 'Code', 'Board', 'Status', 'Value', 'Note', 'By', 'Timestamp'],
   Log: ['Timestamp', 'Ref', 'Board', 'Field', 'From', 'To', 'By'],
-  Meetings: ['Message ID', 'Meeting date', 'Subject', 'New tasks', 'Updates', 'Processed at', 'Method', 'Status'],
+  Meetings: ['Message ID', 'Meeting date', 'Subject', 'New tasks', 'Updates', 'Processed at', 'Method', 'Status', 'Boards'],
   Settings: ['Key', 'Value', 'What it does'],
+  'GMB items': ['Code', 'Order', 'Item', 'Detail', 'Owner', 'Active'],
+  GMB: ['Property', 'Item', 'Status', 'Note', 'By', 'Timestamp'],
 };
+const GMB_STATUSES = ['Done', 'In progress', 'Blocked', 'N/A', ''];
 const DEFAULT_SETTINGS = [
   ['PAGES_BASE', 'https://gauravrswankhede.github.io/', 'Your GitHub Pages address (ends with /)'],
   ['HQ_TOKEN', '', 'Directors\' secret key (created by setup)'],
@@ -29,6 +35,11 @@ const DEFAULT_SETTINGS = [
   ['PRE_MEETING_AGENDA', 'NO', 'YES = 12:00 balance-agenda email to you '],
   ['MONDAY_REPORT', 'NO', 'YES = Monday 10:00 routine-compliance email to directors'],
   ['OWNER_MEETING_EMAIL', 'NO', 'YES = email you a short summary after each meeting is read'],
+  ['MEETING_FEEDS', 'from:gemini-notes@google.com subject:"Daily Evening Meeting" => seo', 'Other meetings, one per line: Gmail search => board ids. Their tasks go only to those boards; GMAIL_QUERY feeds every other board'],
+  ['MEETING_TITLES', 'seo=Daily Evening Meeting\n*=Daily Managers\' Meeting', 'Calendar event title used for "next meeting" on each board (board=title, * = all others)'],
+  ['GMB_PROPERTIES', 'ranchi,haldwani,delhi,gurugram,marchula,goa,dhanbad,chakrata', 'Properties shown on the GMB checklist (board ids)'],
+  ['GMB_BOARDS', 'seo,corporate', 'Boards that see and tick the GMB checklist'],
+  ['BOARD_PAGES', 'seo=trevon-core/seo/', 'Page path for boards whose page is not trevon-<id>/ (board=path)'],
 ];
 const TZ = 'Asia/Kolkata';
 
@@ -100,10 +111,27 @@ function sheet_(name) {
 }
 
 function refreshLinks_() {
-  const base = String(getSetting_('PAGES_BASE')).replace(/\/?$/, '/');
   const sh = sheet_('Boards'); const v = sh.getDataRange().getValues();
-  for (let r = 1; r < v.length; r++) if (v[r][0]) sh.getRange(r + 1, 9).setValue(base + 'trevon-' + v[r][0] + '/?k=' + v[r][7]);
-  setSetting_('HQ_LINK', base + 'trevon-corporate/?k=' + getSetting_('HQ_TOKEN'));
+  for (let r = 1; r < v.length; r++) if (v[r][0]) sh.getRange(r + 1, 9).setValue(pageUrl_(String(v[r][0]).trim()) + '?k=' + v[r][7]);
+  setSetting_('HQ_LINK', pageUrl_('corporate') + '?k=' + getSetting_('HQ_TOKEN'));
+}
+/** "a=x\nb=y" setting → {a:'x', b:'y'} */
+function mapSetting_(k) { const o = {}; String(getSetting_(k) || '').split(/\r?\n|;/).forEach(l => { const i = l.indexOf('='); if (i > 0) o[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }); return o; }
+function pageUrl_(id) {
+  const base = String(getSetting_('PAGES_BASE')).replace(/\/?$/, '/'), p = mapSetting_('BOARD_PAGES')[id];
+  return base + (p ? p.replace(/^\//, '').replace(/\/?$/, '/') : 'trevon-' + id + '/');
+}
+
+/** Run once after pasting v3: adds the new tabs and settings, asks for Calendar access, refreshes links. */
+function upgradeToV3() {
+  Object.keys(HEAD).forEach(n => sheet_(n));
+  const have = new Set(sheet_('Settings').getDataRange().getValues().map(r => r[0]));
+  DEFAULT_SETTINGS.forEach(s => { if (!have.has(s[0])) sheet_('Settings').appendRow(s); });
+  const m = sheet_('Meetings'); if (m.getRange(1, 9).getValue() !== 'Boards') m.getRange(1, 9).setValue('Boards');
+  try { CalendarApp.getDefaultCalendar().getName(); } catch (e) {}
+  sheet_('GMB').getRange('C2:C').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(GMB_STATUSES.filter(Boolean), true).build());
+  refreshLinks_();
+  try { SpreadsheetApp.getActive().toast('v3 ready. Now Deploy → Manage deployments → New version.', 'Trevon Tracker', 15); } catch (e) {}
 }
 
 function installTriggers() {
@@ -143,6 +171,49 @@ function tasks_() {
 function checkins_() {
   return sheet_('Checkins').getDataRange().getDisplayValues().slice(1).map((r, i) => ({ row: i + 2, period: r[0], code: r[1], board: r[2],
     status: r[3], value: r[4], note: r[5], by: r[6], ts: r[7] })).filter(c => c.period);
+}
+
+/** Meeting feeds: the main GMAIL_QUERY feeds every board not claimed by a MEETING_FEEDS line. */
+function feeds_() {
+  const B = boards_(), extra = [];
+  String(getSetting_('MEETING_FEEDS') || '').split(/\r?\n/).forEach(l => {
+    const m = l.split('=>'); if (m.length < 2 || !m[0].trim()) return;
+    const ids = split_(m[1]).map(x => x.toLowerCase()).filter(id => B.some(b => b.id === id));
+    if (ids.length) extra.push({ query: m[0].trim(), boards: ids });
+  });
+  const claimed = new Set([].concat.apply([], extra.map(f => f.boards)));
+  return [{ query: getSetting_('GMAIL_QUERY'), boards: B.filter(b => !claimed.has(b.id)).map(b => b.id), main: true }].concat(extra);
+}
+function claimedBoards_() { return new Set([].concat.apply([], feeds_().filter(f => !f.main).map(f => f.boards))); }
+
+/* GMB set-up checklist: items × properties */
+function gmbItems_() {
+  return sheet_('GMB items').getDataRange().getDisplayValues().slice(1).filter(r => r[0] && String(r[5]).toUpperCase() !== 'NO')
+    .map(r => ({ code: r[0], order: Number(r[1] || 0), item: r[2], detail: r[3], owner: r[4] })).sort((a, b) => a.order - b.order);
+}
+function gmbCells_() {
+  return sheet_('GMB').getDataRange().getDisplayValues().slice(1).map((r, i) => ({ row: i + 2, property: r[0], item: r[1], status: r[2], note: r[3], by: r[4], ts: r[5] })).filter(c => c.property);
+}
+function gmbProps_() {
+  const B = boards_(), want = split_(getSetting_('GMB_PROPERTIES')).map(x => x.toLowerCase());
+  return (want.length ? want.map(id => B.find(b => b.id === id)).filter(Boolean) : B.filter(b => b.type === 'property')).map(b => ({ id: b.id, name: b.name, people: b.people }));
+}
+function gmbAllowed_(boardId) { return split_(getSetting_('GMB_BOARDS') || 'seo,corporate').indexOf(boardId) >= 0; }
+
+/** Next calendar event for a board's meeting (cached 30 min). */
+function nextMeeting_(boardId) {
+  const t = mapSetting_('MEETING_TITLES'), title = t[boardId] || t['*'] || '';
+  if (!title) return null;
+  const cache = CacheService.getScriptCache(), ck = 'nm_' + boardId, hit = cache.get(ck);
+  if (hit) return JSON.parse(hit);
+  let out = null;
+  try {
+    const ev = CalendarApp.getDefaultCalendar().getEvents(new Date(Date.now() - 20 * 60000), new Date(Date.now() + 8 * 864e5))
+      .filter(e => e.getTitle().toLowerCase().indexOf(title.toLowerCase()) >= 0)[0];
+    if (ev) out = { title: ev.getTitle(), start: Utilities.formatDate(ev.getStartTime(), TZ, "yyyy-MM-dd'T'HH:mm"), end: Utilities.formatDate(ev.getEndTime(), TZ, "yyyy-MM-dd'T'HH:mm") };
+  } catch (e) { out = null; }
+  cache.put(ck, JSON.stringify(out), 1800);
+  return out;
 }
 
 /** ISO week key in IST, e.g. 2026-W45, plus Monday–Sunday dates. */
@@ -210,10 +281,14 @@ function doGet(e) {
     const tids = new Set(tasks.map(t => t.id));
     const log = sheet_('Log').getDataRange().getDisplayValues().slice(1).filter(r => corporateView || r[2] === me.id || tids.has(r[1])).slice(-500)
       .map(r => ({ ts: r[0], ref: r[1], board: r[2], field: r[3], from: r[4], to: r[5], by: r[6] }));
-    const meetings = sheet_('Meetings').getDataRange().getDisplayValues().slice(1).slice(-30).map(r => ({ date: r[1], subject: r[2], added: r[3], updates: r[4], method: r[6] }));
+    const claimed = claimedBoards_();
+    const meetings = sheet_('Meetings').getDataRange().getDisplayValues().slice(1)
+      .filter(r => corporateView || (r[8] ? split_(r[8]).indexOf(me.id) >= 0 : !claimed.has(me.id))).slice(-30)
+      .map(r => ({ date: r[1], subject: r[2], added: r[3], updates: r[4], method: r[6] }));
+    const gmb = gmbAllowed_(me.id) ? { items: gmbItems_(), properties: gmbProps_(), cells: gmbCells_().map(strip_), statuses: GMB_STATUSES.filter(Boolean) } : null;
     return json_({ ok: true, hq: a.hq, corporate: corporateView, me: { id: me.id, name: me.name, type: me.type, people: me.people, monitors: me.monitors },
       boards: all.map(x => ({ id: x.id, name: x.name, type: x.type, people: x.people })), periods: per,
-      routines, monitor, checkins: checkins.map(strip_), tasks: tasks.map(strip_), log, meetings, serverTime: now_() });
+      routines, monitor, checkins: checkins.map(strip_), tasks: tasks.map(strip_), log, meetings, gmb, nextMeeting: nextMeeting_(me.id), serverTime: now_() });
   } catch (err) { return json_({ ok: false, error: String(err.message || err) }); }
 }
 
@@ -246,6 +321,21 @@ function doPost(e) {
       log_(q.code, board, 'Routine ' + q.period, ex ? ex.status : '', q.status + (q.value ? ' (' + q.value + ')' : ''), who);
       return json_({ ok: true });
     }
+    if (q.action === 'gmb') {
+      if (!a.hq && !gmbAllowed_(a.board)) throw new Error('The GMB checklist is not on this board');
+      const prop = String(q.property || '').toLowerCase(), item = String(q.item || '');
+      if (!gmbProps_().some(p => p.id === prop)) throw new Error('Unknown property');
+      if (!gmbItems_().some(i => i.code === item)) throw new Error('Unknown GMB item');
+      const st = String(q.status || ''); if (GMB_STATUSES.indexOf(st) < 0) throw new Error('Unknown status');
+      const sh = sheet_('GMB'), ex = gmbCells_().find(c => c.property === prop && c.item === item);
+      const note = q.note === undefined || q.note === null ? (ex ? ex.note : '') : String(q.note).slice(0, 500);
+      const row = [prop, item, st, note, who, now_()];
+      if (ex) sh.getRange(ex.row, 1, 1, 6).setValues([row]); else sh.appendRow(row);
+      const lb = gmbAllowed_(a.board) ? a.board : 'seo';
+      if (!ex || ex.status !== st) log_(item + ' · ' + prop, lb, 'GMB', ex ? ex.status || 'Not started' : 'Not started', st || 'Not started', who);
+      else if (note !== ex.note) log_(item + ' · ' + prop, lb, 'GMB note', '', note.slice(0, 200), who);
+      return json_({ ok: true });
+    }
     throw new Error('Unknown action');
   } catch (err) { return json_({ ok: false, error: String(err.message || err) }); }
   finally { lock.releaseLock(); }
@@ -258,17 +348,22 @@ function processMeetingNotes() {
   try {
     const meet = sheet_('Meetings'); const done = new Set(meet.getDataRange().getValues().slice(1).map(r => String(r[0])));
     const label = GmailApp.getUserLabelByName('Trevon-processed') || GmailApp.createLabel('Trevon-processed');
-    GmailApp.search(getSetting_('GMAIL_QUERY') + ' newer_than:7d -label:Trevon-processed', 0, 10).reverse().forEach(th => {
-      th.getMessages().forEach(m => {
-        if (done.has(m.getId())) return;
-        const text = notesText_(m), date = Utilities.formatDate(m.getDate(), TZ, 'yyyy-MM-dd');
-        let res, method = 'Gemini';
-        try { res = askGemini_(text, date); } catch (err) { res = fallbackParse_(text, boards_()); method = 'Rule-based (' + String(err.message).slice(0, 50) + ')'; }
-        const s = applyMeeting_(res, date);
-        meet.appendRow([m.getId(), date, m.getSubject(), s.added, s.updated, now_(), method, 'OK']);
-        afterMeetingEmails_(s, date);
+    feeds_().forEach(feed => {
+      if (!feed.query || !feed.boards.length) return;
+      const B = boards_().filter(b => feed.boards.indexOf(b.id) >= 0);
+      GmailApp.search(feed.query + ' newer_than:7d -label:Trevon-processed', 0, 10).reverse().forEach(th => {
+        th.getMessages().forEach(m => {
+          if (done.has(m.getId())) return;
+          const text = notesText_(m), date = Utilities.formatDate(m.getDate(), TZ, 'yyyy-MM-dd');
+          let res, method = 'Gemini';
+          try { res = askGemini_(text, date, B, m.getSubject()); } catch (err) { res = fallbackParse_(text, B); method = 'Rule-based (' + String(err.message).slice(0, 50) + ')'; }
+          const s = applyMeeting_(res, date, B);
+          meet.appendRow([m.getId(), date, m.getSubject(), s.added, s.updated, now_(), method, 'OK', feed.main ? '' : feed.boards.join(',')]);
+          done.add(m.getId());
+          afterMeetingEmails_(s, date);
+        });
+        th.addLabel(label);
       });
-      th.addLabel(label);
     });
   } finally { lock.releaseLock(); }
 }
@@ -279,21 +374,25 @@ function notesText_(m) {
   return stripTranscript_(body);
 }
 function stripTranscript_(t) {
-  const i = String(t).search(/(^|\n)\W*Daily Managers.{0,60}?\s\\?[-–—]\s*Transcript|(^|\n)\W*Transcript\W*\n/i);
+  const i = String(t).search(/(^|\n)\W*[^\n]{0,90}?\s\\?[-–—]\s*Transcript\W*\n|(^|\n)\W*Transcript\W*\n/i);
   return (i > 200 ? String(t).slice(0, i) : String(t)).slice(0, 60000);
 }
 
-function askGemini_(notes, date) {
+function askGemini_(notes, date, B, subject) {
   const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY'); if (!key) throw new Error('No GEMINI_API_KEY');
-  const B = boards_(), open = tasks_().filter(t => t.status !== 'Completed').map(t => ({ id: t.id, board: t.board, task: t.task, status: t.status }));
+  B = B || boards_();
+  const ids = new Set(B.map(b => b.id)), hasProps = B.some(b => b.type === 'property'), single = B.length === 1;
+  const open = tasks_().filter(t => t.status !== 'Completed' && ids.has(t.board)).map(t => ({ id: t.id, board: t.board, task: t.task, owner: t.owner, status: t.status }));
   const prompt = [
-    'You turn the minutes of a hotel group\'s daily managers\' meeting into tasks on the right person\'s board.',
+    single ? 'You turn the minutes of a hotel group\'s team meeting ("' + (subject || '') + '") into tasks on that team\'s board. Every task goes on board "' + B[0].id + '"; put the responsible person/people in "owner".'
+      : 'You turn the minutes of a hotel group\'s daily managers\' meeting into tasks on the right person\'s board.',
     'Boards (use these ids exactly): ' + JSON.stringify(B.map(b => ({ id: b.id, name: b.name, type: b.type, people: b.people, also_called: b.aliases }))),
-    'Notes on people: "Punit Kaushik" is Rakesh Chaturvedi (director) → corporate. "Hyde Goa" is the Goa property login → goa. "Sandeep" alone is the sales manager (sales); "Sandeep Rawat" is the Chakrata GM. Gemini often misspells places (Haldoni = Haldwani, Gorgang = Gurugram).',
+    single ? 'Team members: ' + B[0].people.join(', ') + '. Use their full names as owner (comma-separated when shared); "The group" / everyone → owner "Team".'
+      : 'Notes on people: "Punit Kaushik" is Rakesh Chaturvedi (director) → corporate. "Hyde Goa" is the Goa property login → goa. "Sandeep" alone is the sales manager (sales); "Sandeep Rawat" is the Chakrata GM. Gemini often misspells places (Haldoni = Haldwani, Gorgang = Gurugram).',
     'Open tasks: ' + JSON.stringify(open), 'Meeting date: ' + date,
     'Rules: 1) new_tasks = concrete action items agreed in the meeting that are not already open; short imperative wording (max 20 words).',
-    '2) Items for "The group" / all general managers → one task for EVERY board with type "property".',
-    '3) Named owner → the board listing that person. Directors / unassigned → corporate.',
+    single ? '2) "The group" items → one task, owner "Team".' : '2) Items for "The group" / all general managers → one task for EVERY board with type "property".',
+    single ? '3) Named owner → that person as owner.' : '3) Named owner → the board listing that person. Directors / unassigned → ' + (ids.has('corporate') ? 'corporate.' : B[0].id + '.'),
     '4) updates = open tasks the minutes clearly report as done, started or stuck: id, status (Completed / Ongoing / Stuck), short reason.',
     '5) priority High only if urgent or guest-impacting, else Medium (Low for nice-to-haves). due = YYYY-MM-DD only if stated. Never invent tasks.',
     'Return JSON {"new_tasks":[{"board":"","task":"","owner":"","priority":"","due":""}],"updates":[{"id":"","status":"","reason":""}]}',
@@ -306,25 +405,31 @@ function askGemini_(notes, date) {
   return normaliseResult_(JSON.parse(txt.replace(/^```json\s*|```$/g, '')), B);
 }
 
-/** No-AI reader for Gemini's "Next steps" checklist: "- [ ] [Owner] Title: description". */
+/** No-AI reader for Gemini's "Next steps" checklist: "[Owner] Title: description".
+ *  Gemini's plain-text emails wrap long items over several lines, so lines are joined until the next "[Owner]" / bullet or a blank line. */
 function fallbackParse_(notes, B) {
-  const lines = String(notes).split(/\r?\n/).map(s => s.trim()); let on = false; const items = [], seen = new Set();
-  for (const l of lines) {
-    const p = l.replace(/[#*\\]/g, '').trim();
-    if (/^(suggested next steps|next steps|action items|action points)\s*:?$/i.test(p)) { on = true; continue; }
-    if (on && /^(summary|details|decisions|want to see more|you should review|tip:)/i.test(p)) { on = false; continue; }
-    if (!on || !p) continue;
-    const m = p.replace(/^([-•*]\s*)?(\[\s?[xX]?\s?\]|☐|☑|\d+[.)])?\s*/, '');
-    if (m.length > 8 && !seen.has(m.toLowerCase())) { seen.add(m.toLowerCase()); items.push(m); }
+  const lines = String(notes).split(/\r?\n/); let on = false, cur = null; const items = [], seen = new Set();
+  const close = () => { if (cur) { const m = cur.replace(/\s+/g, ' ').trim(); if (m.length > 8 && !seen.has(m.toLowerCase())) { seen.add(m.toLowerCase()); items.push(m); } } cur = null; };
+  for (const raw of lines) {
+    const p = raw.replace(/[#*\\]/g, '').trim();
+    if (/^(suggested next steps|next steps|action items|action points)\s*:?$/i.test(p)) { close(); on = true; continue; }
+    if (on && /^(summary|details|decisions|meeting records|is the content|google llc|you have received|want to see more|you should review|tip:|full notes|transcript)/i.test(p)) { close(); on = false; continue; }
+    if (!on) continue;
+    if (!p) { close(); continue; }
+    const start = /^([-•*]\s+|\[\s?[xX]?\s?\]\s*|☐\s*|☑\s*|\d+[.)]\s+)/.test(p) || /^\[[^\]]+\]/.test(p);
+    const text = p.replace(/^([-•*]\s*)?(\[\s?[xX]?\s?\](?!\S)|☐|☑|\d+[.)])?\s*/, '');
+    if (start || !cur) { close(); cur = text; } else cur += ' ' + text;
   }
-  const props = B.filter(b => b.type === 'property'), out = [];
+  close();
+  const props = B.filter(b => b.type === 'property'), out = [], single = B.length === 1;
+  const fallbackBoard = B.find(b => b.type === 'corporate') || B[0] || { id: 'corporate', people: [] };
   items.forEach(it => {
     let owner = '', text = it; const om = it.match(/^\[([^\]]+)\]\s*(.*)$/);
     if (om) { owner = om[1].trim(); text = om[2].trim(); }
-    const group = /^(the group|all|everyone|all (general )?managers|all gms)$/i.test(owner);
-    const targets = group ? props : (owner && !/^unassigned$/i.test(owner) ? matchBoards_(owner, B) : []);
-    (targets.length ? targets : [B.find(b => b.type === 'corporate') || { id: 'corporate', people: [] }]).forEach(b => out.push({
-      board: b.id, task: text.slice(0, 300), owner: group ? (b.people[0] || 'GM') : (/^unassigned$/i.test(owner) ? '' : owner),
+    const group = /^(the group|all|everyone|team|all (general )?managers|all gms)$/i.test(owner);
+    const targets = single ? [B[0]] : group ? (props.length ? props : B) : (owner && !/^unassigned$/i.test(owner) ? matchBoards_(owner, B) : []);
+    (targets.length ? targets : [fallbackBoard]).forEach(b => out.push({
+      board: b.id, task: text.slice(0, 300), owner: group ? (single || !props.length ? 'Team' : (b.people[0] || 'GM')) : (/^unassigned$/i.test(owner) ? '' : owner),
       priority: /urgent|immediately|asap|today/i.test(text) ? 'High' : 'Medium', due: '' }));
   });
   return { new_tasks: out, updates: [] };
@@ -347,10 +452,10 @@ function matchBoards_(name, B) {
 
 function normaliseResult_(r, B) {
   const ids = new Set(B.map(b => b.id)), props = B.filter(b => b.type === 'property');
-  const nt = [];
+  const dflt = ids.has('corporate') ? 'corporate' : B[0].id, nt = [];
   (r.new_tasks || []).filter(t => t && t.task).forEach(t => {
     const bid = String(t.board || t.property || '').toLowerCase();
-    const list = /^(all|all_properties|group)$/.test(bid) ? props.map(p => p.id) : [ids.has(bid) ? bid : 'corporate'];
+    const list = B.length === 1 ? [B[0].id] : /^(all|all_properties|group)$/.test(bid) ? (props.length ? props : B).map(p => p.id) : [ids.has(bid) ? bid : dflt];
     list.forEach(id => nt.push({ board: id, task: String(t.task).slice(0, 300), owner: String(t.owner || '').slice(0, 60),
       priority: ['High', 'Medium', 'Low'].indexOf(t.priority) >= 0 ? t.priority : 'Medium', due: /^\d{4}-\d{2}-\d{2}$/.test(t.due || '') ? t.due : '' }));
   });
@@ -358,18 +463,18 @@ function normaliseResult_(r, B) {
   return { new_tasks: nt, updates: up };
 }
 
-function applyMeeting_(res, date) {
-  const by = 'Meeting ' + date, sh = sheet_('Tasks');
-  tasks_().forEach(t => { if (t.status !== 'Completed' && t.created.slice(0, 10) < date) sh.getRange(t.row, 11).setValue(t.carry + 1); });
+function applyMeeting_(res, date, B) {
+  const by = 'Meeting ' + date, sh = sheet_('Tasks'), ids = new Set((B || boards_()).map(b => b.id));
+  tasks_().forEach(t => { if (ids.has(t.board) && t.status !== 'Completed' && t.created.slice(0, 10) < date) sh.getRange(t.row, 11).setValue(t.carry + 1); });
   let updated = 0;
-  res.updates.forEach(u => { const t = tasks_().find(x => x.id === u.id); if (t && t.status !== 'Completed') { setStatus_(t, u.status, by, t.notes ? t.notes + ' | ' + u.reason : u.reason); updated++; } });
+  res.updates.forEach(u => { const t = tasks_().find(x => x.id === u.id); if (t && ids.has(t.board) && t.status !== 'Completed') { setStatus_(t, u.status, by, t.notes ? t.notes + ' | ' + u.reason : u.reason); updated++; } });
   const added = res.new_tasks.map(t => addTask_(Object.assign({}, t, { source: 'Meeting', meetingDate: date }), by));
   return { added: added.length, updated };
 }
 
 /* ───────────── emails ───────────── */
 
-function boardLink_(b) { return String(getSetting_('PAGES_BASE')).replace(/\/?$/, '/') + 'trevon-' + b.id + '/?k=' + b.token; }
+function boardLink_(b) { return pageUrl_(b.id) + '?k=' + b.token; }
 function tableHtml_(list) {
   if (!list.length) return '<p>No open items. 🎉</p>';
   return '<table cellpadding="6" style="border-collapse:collapse;font-family:Arial;font-size:13px"><tr style="background:#0f1b2d;color:#fff"><th align="left">ID</th><th align="left">Task</th><th>Status</th><th>Carried</th><th>Due</th></tr>' +
@@ -429,9 +534,11 @@ function sendMondayReport() {
 
 /* ───────────── manual tools ───────────── */
 
-function reprocessLatestMeeting() {
-  const th = GmailApp.search(getSetting_('GMAIL_QUERY'), 0, 1)[0];
-  if (!th) { SpreadsheetApp.getUi().alert('No meeting email found for: ' + getSetting_('GMAIL_QUERY')); return; }
+function reprocessLatestTeamMeeting() { const f = feeds_().filter(x => !x.main)[0]; if (f) reprocessLatestMeeting(f.query); }
+function reprocessLatestMeeting(query) {
+  query = typeof query === 'string' && query ? query : getSetting_('GMAIL_QUERY');
+  const th = GmailApp.search(query, 0, 1)[0];
+  if (!th) { SpreadsheetApp.getUi().alert('No meeting email found for: ' + query); return; }
   const lbl = GmailApp.getUserLabelByName('Trevon-processed'); if (lbl) th.removeLabel(lbl);
   const ids = th.getMessages().map(m => m.getId()), meet = sheet_('Meetings'), v = meet.getDataRange().getValues();
   for (let r = v.length - 1; r >= 1; r--) if (ids.indexOf(String(v[r][0])) >= 0) meet.deleteRow(r + 1);
@@ -446,6 +553,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Trevon tasks')
     .addItem('Check for meeting notes now', 'processMeetingNotes')
     .addItem('Re-read the latest meeting notes', 'reprocessLatestMeeting')
+    .addItem('Re-read the latest evening (SEO team) meeting', 'reprocessLatestTeamMeeting')
     .addItem('Send balance agenda now', 'sendPreMeetingAgenda')
     .addItem('Send Monday compliance report now', 'sendMondayReport')
     .addItem('Reset a dashboard link', 'resetBoardLink')

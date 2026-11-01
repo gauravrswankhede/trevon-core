@@ -49,3 +49,13 @@ Add a row on the **Boards** tab (id, name, type, people, aliases), run **Refresh
 
 ## After changing the script
 **Deploy → Manage deployments → ✏️ → Version: New version → Deploy** (the URL stays the same).
+
+## SEO, Web & GMB team board (added Nov 2026, script v3)
+- **Page:** `https://gauravrswankhede.github.io/trevon-core/seo/?k=<token>` (link in the Boards tab, row `seo`). People: Gaurav Wankhede, Ankita Dwivedi, Shubhangi Kumud, Developer. Chips at the top of *Action items* filter by person; "Team" items show for everyone. `?p=Ankita%20Dwivedi` opens straight on one person.
+- **Meeting feed:** Settings → `MEETING_FEEDS` = `from:gemini-notes@google.com subject:"Daily Evening Meeting" => seo`. Those minutes add tasks **only** to the SEO board; the managers' meeting (`GMAIL_QUERY`) never touches it. Checked every 10 minutes, like the managers' meeting.
+- **GMB set-up checklist:** tabs **GMB items** (the 15 tasks; edit wording, add rows, Active = NO to hide) and **GMB** (one row per property × task: Done / In progress / Blocked / N/A). Properties = Settings → `GMB_PROPERTIES` (add `gwalior` when it opens). Shown on the SEO board and the corporate board (`GMB_BOARDS`).
+- **Websites right now:** read from `seo-dashboards/<site>/status.json` (trevonhotels.com, becomeparents.com, bangkoksurrogacy.com), rescanned every 4 hours by the SEO monitor in the `seo-dashboards` repo.
+- **GMB performance:** read from the GMB dashboard's `trevon-gmb-7f3c2a91/data.json` (refreshed daily from the agency workbooks).
+- **Next meeting:** next calendar event whose title contains the board's `MEETING_TITLES` entry.
+- **Upgrading from v2:** paste the new `Code.gs` → run **upgradeToV3** once (allow Calendar access) → Deploy → Manage deployments → ✏️ → New version → Deploy.
+- **Rule-based reader fix (v3):** Gemini's plain-text emails wrap long items over several lines; the reader now joins them and stops at the email footer, so one action item = one task.

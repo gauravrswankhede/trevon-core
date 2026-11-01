@@ -11,20 +11,27 @@ function page() {
       <div class="seg" id="pseg"><button data-i="0" class="on">This week</button><button data-i="1">Last week</button></div></div><div id="rts"></div></section>
     <div id="mon"></div>
     <section class="panel"><div class="ph"><h2>Action items <span class="note">· from meetings, strategy and roles</span></h2>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><div class="seg" id="tseg"><button data-v="open" class="on">Open</button><button data-v="done">Completed</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="addT" style="padding:6px 12px;font-size:13px">＋ Add action item</button><div class="seg" id="tseg"><button data-v="open" class="on">Open</button><button data-v="done">Completed</button></div>
       <div class="seg" id="sseg">${SRCS.map(([v, l]) => `<button data-v="${v}" class="${v === "" ? "on" : ""}">${l}</button>`).join("")}</div></div></div><div id="pfil"></div><div id="tasks"></div></section>
     <div id="extra"></div>
     <section class="panel"><div class="ph"><h2>Activity</h2><span class="note">every update on this dashboard, newest first</span></div><div class="feed" id="feed"></div></section>
     <div id="err"></div></main>
   <button class="fab" id="fab">＋ Add task</button>
   <div class="modal" id="modal"><div class="sheet"><b>New action item</b><textarea id="nT" rows="3" placeholder="What needs to be done?"></textarea>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><select id="nP"><option>Medium</option><option>High</option><option>Low</option></select><input type="date" id="nD"></div>
+    <label id="nOw" style="display:none;font-size:12.5px;color:var(--mute)">Assign to<select id="nO" style="width:100%;margin-top:4px"></select></label>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label style="font-size:12.5px;color:var(--mute)">Priority<select id="nP" style="width:100%;margin-top:4px"><option>Medium</option><option>High</option><option>Low</option></select></label><label style="font-size:12.5px;color:var(--mute)">Due date (optional)<input type="date" id="nD" style="width:100%;margin-top:4px"></label></div>
     <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn g" id="nC">Cancel</button><button class="btn" id="nS">Add</button></div></div></div>`;
   $$("#pseg button").forEach((b) => (b.onclick = () => { PIDX = +b.dataset.i; $$("#pseg button").forEach((x) => x.classList.toggle("on", x === b)); renderRoutines(); }));
   $$("#tseg button").forEach((b) => (b.onclick = () => { TVIEW = b.dataset.v; $$("#tseg button").forEach((x) => x.classList.toggle("on", x === b)); renderTasks(); }));
   $$("#sseg button").forEach((b) => (b.onclick = () => { SRC = b.dataset.v; $$("#sseg button").forEach((x) => x.classList.toggle("on", x === b)); renderTasks(); }));
   $("#who").onclick = () => { askName(true); $("#whon").textContent = me() || "set your name"; };
-  $("#fab").onclick = () => { $("#modal").classList.add("on"); $("#nT").focus(); };
+  const openAdd = () => {
+    const P = (D && D.me && D.me.type !== "property" && D.me.people.length > 1) ? D.me.people : [];
+    $("#nOw").style.display = P.length ? "" : "none";
+    $("#nO").innerHTML = P.length ? [`<option value="Team">Everyone (team)</option>`, ...P.map((p) => `<option ${p === PERSON ? "selected" : ""}>${esc(p)}</option>`)].join("") : "";
+    $("#modal").classList.add("on"); $("#nT").focus();
+  };
+  $("#fab").onclick = openAdd; $("#addT").onclick = openAdd;
   $("#nC").onclick = () => $("#modal").classList.remove("on");
   $("#nS").onclick = addTask;
 }
@@ -167,7 +174,7 @@ function renderFeed() {
 }
 async function addTask() {
   const task = $("#nT").value.trim(); if (!task) return; if (!me()) askName(); $("#nS").disabled = true;
-  try { await post({ action: "add", task, priority: $("#nP").value, due: $("#nD").value, owner: PERSON || undefined }); $("#modal").classList.remove("on"); $("#nT").value = ""; toast("Added"); await refresh(); }
+  try { await post({ action: "add", task, priority: $("#nP").value, due: $("#nD").value, owner: ($("#nOw").style.display !== "none" && $("#nO").value) || PERSON || undefined }); $("#modal").classList.remove("on"); $("#nT").value = ""; $("#nD").value = ""; toast("Added" + ($("#nOw").style.display !== "none" ? " for " + $("#nO").value : "")); await refresh(); }
   catch (e) { toast("Not saved: " + e.message); } finally { $("#nS").disabled = false; }
 }
 async function refresh() {

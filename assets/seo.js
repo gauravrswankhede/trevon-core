@@ -1,12 +1,10 @@
 // SEO, Web & GMB team board: extra panels on top of board.js (loaded only by /trevon-core/seo/).
 // Live data: tasks + GMB checklist from the Trevon Tracker sheet (via board.js / core.js),
-// website scans from /seo-dashboards/<site>/status.json (every 4 hours, GitHub Actions),
+// trevonhotels.com scan from /seo-dashboards/trevon/status.json (every 4 hours, GitHub Actions),
 // GMB agency performance from /trevon-gmb-7f3c2a91/data.json (daily).
 (function () {
   const SITES = [
     { id: "trevon", name: "Trevon Hotels & Resorts", url: "https://trevonhotels.com/", page: "" },
-    { id: "becomeparents", name: "Become Parents", url: "https://becomeparents.com/", page: "/seo-dashboards/becomeparents/" },
-    { id: "bangkoksurrogacy", name: "Bangkok Surrogacy", url: "https://bangkoksurrogacy.com/", page: "/seo-dashboards/bangkoksurrogacy/" },
   ];
   const GMB_DATA = "/trevon-gmb-7f3c2a91/data.json", GMB_PAGE = "/trevon-gmb-7f3c2a91/";
   const GMB_OWNERS = "Gaurav & Ankita";
@@ -203,7 +201,7 @@
   window.BOARD_EXTRA = function (D) {
     css(); loadExternal();
     $("#eb").textContent = "Trevon Hotels & Resorts · SEO, Web & GMB team" + (D.hq ? " · director view" : "");
-    $("#extra-top").innerHTML = `<section class="panel"><div class="ph"><h2>Websites right now <span class="note">· live scan every 4 hours</span></h2></div><div class="cards3">${SITES.map(siteCard).join("")}</div></section>
+    $("#extra-top").innerHTML = `<section class="panel"><div class="ph"><h2>trevonhotels.com right now <span class="note">· live scan every 4 hours</span></h2></div><div class="cards3">${SITES.map(siteCard).join("")}</div></section>
       <section class="panel"><div class="ph"><h2>Google Business Profiles right now <span class="note">· from the agency's weekly reports</span></h2></div>${gmbPerf()}</section>`;
     $("#extra").innerHTML = gmbMatrix() + meetingsPanel() + skillsPanel();
     $$("#gmbx .gx .gc").forEach((b) => (b.onclick = () => openGmb(b.dataset.p, b.dataset.i)));
